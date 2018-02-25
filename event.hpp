@@ -43,7 +43,7 @@ private:
 			eventReceiver,
 			[](void* obj, A... args) -> R
 			{
-				(static_cast<CallbackClassType*>(obj)->*CallbackPtr)(args...);
+				return (static_cast<CallbackClassType*>(obj)->*CallbackPtr)(args...);
 			}
 		};
 
@@ -86,18 +86,18 @@ public:
 	~Event();
 
 	template<typename ... ActualArgsT>
-	void operator()(ActualArgsT... args)
+	void operator()(ActualArgsT&&... args)
 	{
 		if (m_Callbacks.index() == 1)
 		{
 			auto& cb = std::get<1>(m_Callbacks);
-			cb.func(cb.object, args...);
+			cb.func(cb.object, std::forward<ActualArgsT>(args)...);
 		}
 		else if (m_Callbacks.index() == 2)
 		{
 			for (auto &[object, func] : std::get<2>(m_Callbacks))
 			{
-				func(object, args...);
+				func(object, std::forward<ActualArgsT>(args)...);
 			}
 		}
 	}
