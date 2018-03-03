@@ -27,6 +27,28 @@ private:
 
 	std::vector<void**> m_Cleanups;
 
+	inline std::size_t internal_add_callback(Callback cb)
+	{
+		if (m_Callbacks.index() == 0)
+		{
+			m_Callbacks.template emplace<1>(cb);
+			return 0;
+		}
+		else if (m_Callbacks.index() == 1)
+		{
+			Callback single = std::get<1>(m_Callbacks);
+			m_Callbacks.template emplace<2>();
+			std::get<2>(m_Callbacks).push_back(single);
+			std::get<2>(m_Callbacks).push_back(cb);
+			return 1;
+		}
+		else
+		{
+			std::get<2>(m_Callbacks).push_back(cb);
+			return std::get<2>(m_Callbacks).size() - 1;
+		}
+	}
+
 	//adds listener that needs to be notified at destruction time of event
 	template<auto CallbackPtr, typename CallbackClassType>
 	std::size_t add_listener(CallbackClassType* eventReceiver, void** cleanup)
@@ -47,21 +69,24 @@ private:
 			}
 		};
 
-		if (m_Callbacks.index() == 0)
-		{
-			m_Callbacks.template emplace<1>(cb);
-		}
-		else if (m_Callbacks.index() == 1)
-		{
-			Callback single = std::get<1>(m_Callbacks);
-			m_Callbacks.template emplace<2>();
-			std::get<2>(m_Callbacks).push_back(single);
-			std::get<2>(m_Callbacks).push_back(cb);
-		}
-		else
-		{
-			std::get<2>(m_Callbacks).push_back(cb);
-		}
+		internal_add_callback(cb);
+	}
+
+	//add listener to static callback
+	template<auto CallbackPtr>
+	std::size_t add_static_listener(void** cleanup = nullptr)
+	{
+		if (cleanup)
+			m_Cleanups.push_back(cleanup);
+		Callback cb = {
+			nullptr,
+			[](void*, A... args) -> R
+			{
+				return CallbackPtr(args...);
+			}
+		};
+
+		internal_add_callback(cb);
 	}
 
 	void remove_listener(std::size_t callbackIndex)
@@ -138,6 +163,37 @@ struct Listener<EventPtr, CallbackPtr>
 };
 
 template<
+	class EventClass, typename EventFuncType, Event<EventFuncType> EventClass::* EventPtr,
+	typename CallbackFuncType, CallbackFuncType* CallbackPtr/*just static*/
+>
+struct Listener<EventPtr, CallbackPtr>
+{
+	std::size_t m_CallbackIndex;
+	EventClass* m_EventSender = nullptr;
+
+	Listener() = default;
+
+	Listener(EventClass* eventSender)
+	{
+		connect(eventSender);
+	}
+
+	void connect(EventClass* eventSender)
+	{
+		m_EventSender = eventSender;
+		m_CallbackIndex = (eventSender->*EventPtr).template add_static_listener<CallbackPtr>((void**)&m_EventSender);
+	}
+
+	~Listener()
+	{
+		if (m_EventSender)
+		{
+			(m_EventSender->*EventPtr).remove_listener(m_CallbackIndex);
+		}
+	}
+};
+
+template<
 	typename EventFuncType, Event<EventFuncType>* EventPtr/*just static*/,
 	class CallbackClass, typename CallbackFuncType, CallbackFuncType CallbackClass::* CallbackPtr
 >
@@ -153,6 +209,18 @@ struct Listener<EventPtr, CallbackPtr>
 	~Listener()
 	{
 		EventPtr->remove_listener(m_CallbackIndex);
+	}
+};
+
+template<
+	typename EventFuncType, Event<EventFuncType>* EventPtr/*just static*/,
+	typename CallbackFuncType, CallbackFuncType* CallbackPtr/*just static*/
+>
+struct Listener<EventPtr, CallbackPtr>
+{
+	Listener()
+	{
+		EventPtr->template add_static_listener<CallbackPtr>();
 	}
 };
 

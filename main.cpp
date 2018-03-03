@@ -40,6 +40,20 @@ struct Baz
 	Listener<&Foo::evt, &Baz::onEvt> conn;
 };
 
+void OnEvtGlobal(int x)
+{
+	std::cout << __PRETTY_FUNCTION__ << " " << x << " was called!\n";
+}
+
+Listener<&Foo::evt, &OnEvtGlobal> ConnGlobal;
+
+void OnEvtGlobal2(float delta)
+{
+	std::cout << __PRETTY_FUNCTION__ << " " << delta << " was called!\n";
+}
+
+Listener<&g_evt2, &OnEvtGlobal2> ConnGlobal2;
+
 int main()
 {
 	Baz baz1;
