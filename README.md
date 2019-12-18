@@ -1,5 +1,5 @@
 # Talk slide
-https://www.slideshare.net/slideshow/embed_code/key/MNZ7ePaeJrPIct
+https://docs.google.com/presentation/d/1Y5JktAemPYNDmVJ5-3f_KQH1LTDmey-YJFAnly0Cxpo/edit?usp=sharing
 
 # Introduction
 C++ did not natively provide an equivalent to events or delegates in other languages until C++11, and even though the added `std::function` is nice and easy to use, it has some non-negligible performance overhead making it hard to replace the existing event notification systems, which are usually either hard-coded, or based on observer-pattern interfaces. Improvements or replacements to `std::function` have been hot topics every once a while, e.g. `function_view`. At any time, there are probably more than two dozens of active libraries about signals / events / delegates on Github. Each comes with a slightly different flavor, for instance, some want to be more generic and flexible, while some others want to be thread-safe. For the applications I've been working on, games and game engines, it is extremely important to keep everything fastest possible. I want to find a multicast-delegate that beats interface-based observers on performance. I want to have an alternative, equivalent in speed solution to hard-coded function calls. When it is fast enough, we can afford to use it everywhere to prevent tight couplings or design-pattern hell situations.
