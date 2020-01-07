@@ -1,143 +1,165 @@
 #pragma once
 #include <vector>
-#include <variant>
+#include <unordered_map>
+#include <xmmintrin.h>
+
 
 template<typename F> struct Event;
+template<typename F> struct ListenerBase;
+template<auto EventPtr, auto CallbackPtr> struct Listener;
 
-template<typename R, typename ... A>
-struct Event<R(A...)>
+template<typename ... A>
+struct ListenerBase<void(A...)>
 {
-private:
-	template<auto, auto> friend struct Listener;
+	using CallbackFuncType = void(void*, A...);
+	void* object = nullptr;
+	CallbackFuncType* func = nullptr;
+	ListenerBase* prev = nullptr;
+	ListenerBase* next = nullptr;
+	Event<void(A...)>* event = nullptr;
+};
 
-	using CallbackFuncType = R(void*, A...);
+template<typename ... A>
+struct Event<void(A...)>
+{
+	using CallbackFuncType = void(void*, A...);
+	using ListenerType = ListenerBase<void(A...)>;
 
-	struct Callback
+	~Event() 
 	{
-		void* object;
-		CallbackFuncType* func;
-
-		Callback(void* object, CallbackFuncType* func)
-			: object(object)
-			, func(func)
-		{}
-	};
-
-	std::variant<std::nullptr_t, Callback, std::vector<Callback>> m_Callbacks;
-
-	std::vector<void**> m_Cleanups;
-
-	inline std::size_t internal_add_callback(Callback cb)
-	{
-		if (m_Callbacks.index() == 0)
+		for (auto listener = head; listener != nullptr; )
 		{
-			m_Callbacks.template emplace<1>(cb);
-			return 0;
-		}
-		else if (m_Callbacks.index() == 1)
-		{
-			Callback single = std::get<1>(m_Callbacks);
-			m_Callbacks.template emplace<2>();
-			std::get<2>(m_Callbacks).push_back(single);
-			std::get<2>(m_Callbacks).push_back(cb);
-			return 1;
-		}
-		else
-		{
-			std::get<2>(m_Callbacks).push_back(cb);
-			return std::get<2>(m_Callbacks).size() - 1;
+			auto next = listener->next;
+			listener->event = nullptr;
+			listener->prev = nullptr;
+			listener->next = nullptr;
+			listener = next;
 		}
 	}
-
-	//adds listener that needs to be notified at destruction time of event
-	template<auto CallbackPtr, typename CallbackClassType>
-	std::size_t add_listener(CallbackClassType* eventReceiver, void** cleanup)
-	{
-		m_Cleanups.push_back(cleanup);
-		return add_listener<CallbackPtr, CallbackClassType>(eventReceiver);
-	}
-
-	//adds listener that doesn't need to be notified about event destruction
-	template<auto CallbackPtr, typename CallbackClassType>
-	std::size_t add_listener(CallbackClassType* eventReceiver)
-	{
-		Callback cb = {
-			eventReceiver,
-			[](void* obj, A... args) -> R
-			{
-				return (static_cast<CallbackClassType*>(obj)->*CallbackPtr)(args...);
-			}
-		};
-
-		internal_add_callback(cb);
-	}
-
-	//add listener to static callback
-	template<auto CallbackPtr>
-	std::size_t add_static_listener(void** cleanup = nullptr)
-	{
-		if (cleanup)
-			m_Cleanups.push_back(cleanup);
-		Callback cb = {
-			nullptr,
-			[](void*, A... args) -> R
-			{
-				return CallbackPtr(args...);
-			}
-		};
-
-		internal_add_callback(cb);
-	}
-
-	void remove_listener(std::size_t callbackIndex)
-	{
-		if (m_Callbacks.index() == 1)
-		{
-			m_Callbacks.template emplace<0>();
-		}
-		else if (m_Callbacks.index() == 2)
-		{
-			auto& vec = std::get<2>(m_Callbacks);
-			vec.erase(vec.begin() + callbackIndex);
-			if (vec.size() == 1)
-			{
-				m_Callbacks.template emplace<1>(vec[0]);
-			}
-		}
-	}
-
-public:
-
-	~Event();
 
 	template<typename ... ActualArgsT>
 	void operator()(ActualArgsT&&... args)
 	{
-		if (m_Callbacks.index() == 1)
-		{
-			auto& cb = std::get<1>(m_Callbacks);
-			cb.func(cb.object, std::forward<ActualArgsT>(args)...);
+		if (first_func) {
+			first_func(first_object, std::forward<ActualArgsT>(args)...);
 		}
-		else if (m_Callbacks.index() == 2)
+		else if (head) // at least two
 		{
-			for (auto &[object, func] : std::get<2>(m_Callbacks))
+			auto listener = head, next = head;
+			for (auto pre_tail = tail->prev; listener != pre_tail; listener = next)
 			{
-				func(object, std::forward<ActualArgsT>(args)...);
+				next = listener->next;
+				//this prefetches the next next pointer
+				_mm_prefetch((const char*)next->next, _MM_HINT_T0);
+
+				//this prefetches next function and object
+				_mm_prefetch((const char*)next->func, _MM_HINT_T0);
+				_mm_prefetch((const char*)next->object, _MM_HINT_T0);
+				listener->func(listener->object, std::forward<ActualArgsT>(args)...);
 			}
+
+			//now listener is the pre-tail
+			{
+				_mm_prefetch((const char*)tail->func, _MM_HINT_T0);
+				_mm_prefetch((const char*)tail->object, _MM_HINT_T0);
+				listener->func(listener->object, std::forward<ActualArgsT>(args)...);
+			}
+
+			tail->func(tail->object, std::forward<ActualArgsT>(args)...);
 		}
+	}
+
+	//Caches the callback of head as a small-object optimization for single callback
+	CallbackFuncType* first_func = nullptr; 
+	void* first_object = nullptr;
+
+	ListenerType* head = nullptr;
+	ListenerType* tail = nullptr;
+	std::unordered_map<typename ListenerType::CallbackFuncType*, ListenerType*> mapping_by_func;
+
+	void add(ListenerType* listener)
+	{
+		if (mapping_by_func.find(listener->func) == mapping_by_func.end())
+		{
+			if (!head)
+			{
+				head = tail = listener;
+				listener->prev = listener->next = nullptr;
+				first_func = listener->func;
+				first_object = listener->object;
+			}
+			else
+			{
+				tail->next = listener;
+				listener->prev = tail;
+				listener->next = nullptr;
+				tail = listener;
+				first_func = nullptr; //no longer single function
+				first_object = nullptr;
+			}
+			mapping_by_func[listener->func] = listener;
+		}
+		else //found the listener group of the same callback
+		{
+			ListenerType*& groupedHead = mapping_by_func[listener->func];
+			listener->next = groupedHead->next;
+			listener->prev = groupedHead;
+			if (groupedHead->next)
+				groupedHead->next->prev = listener;
+			groupedHead->next = listener;
+			if (groupedHead == tail)
+				tail = listener;
+			groupedHead = listener;
+			first_func = nullptr; //no longer single function
+			first_object = nullptr;
+		}
+	}
+
+	void remove(ListenerType* listener)
+	{
+		if (tail == listener)
+			tail = listener->prev;
+		if (head == listener) {
+			head = listener->next;
+			first_func = head && head == tail ? head->func : nullptr;
+			first_object = head && head == tail ? head->object : nullptr;
+		}
+		if (mapping_by_func[listener->func] == listener)
+		{
+			if (listener->prev && listener->prev->func == listener->func)
+				mapping_by_func[listener->func] = listener->prev;
+			else mapping_by_func.erase(listener->func);
+		}
+
+		if (listener->prev)
+			listener->prev->next = listener->next;
+		if (listener->next)
+			listener->next->prev = listener->prev;
+	}
+
+	void replace(ListenerType* from, ListenerType* to)
+	{
+		if (mapping_by_func[from->func] == from)
+			mapping_by_func[from->func] = to;
+		if (tail == from)
+			tail = to;
+		if (head == from) {
+			head = to;
+			first_func = head && head == tail ? head->func : nullptr;
+			first_object = head && head == tail ? head->object : nullptr;
+		}
+		if (from->prev)
+			from->prev->next = to;
 	}
 };
 
-template<auto EventPtr, auto CallbackPtr> struct Listener;
-
 template<
-	class EventClass, typename EventFuncType, Event<EventFuncType> EventClass::* EventPtr,
-	class CallbackClass, typename CallbackFuncType, CallbackFuncType CallbackClass::* CallbackPtr
+	class EventClass, typename... EventFuncArgsT, Event<void(EventFuncArgsT...)> EventClass:: * EventPtr,
+	class CallbackClass, typename CallbackFuncType, CallbackFuncType CallbackClass:: * CallbackPtr
 >
-struct Listener<EventPtr, CallbackPtr>
+struct Listener<EventPtr, CallbackPtr> : public ListenerBase<void(EventFuncArgsT...)>
 {
-	std::size_t m_CallbackIndex;
-	EventClass* m_EventSender = nullptr;
+	using Base = ListenerBase<void(EventFuncArgsT...)>;
 
 	Listener() = default;
 
@@ -146,89 +168,45 @@ struct Listener<EventPtr, CallbackPtr>
 		connect(eventSender, eventReceiver);
 	}
 
+	Listener(const Listener&) = delete;
+	Listener(Listener&& other) : Base(other)
+	{
+		//fix the object
+		if (other.object)
+			this->object = (void*)((size_t)this - ((size_t)&other - (size_t)other.object));
+
+		//fix the links
+		if (this->event)
+			this->event->replace(&other, this);
+		other.object = nullptr;
+		other.func = nullptr;
+		other.prev = nullptr;
+		other.next = nullptr;
+		other.event = nullptr;
+	}
+
 	void connect(EventClass* eventSender, CallbackClass* eventReceiver)
 	{
-		m_EventSender = eventSender;
-		m_CallbackIndex = (eventSender->*EventPtr).template add_listener<CallbackPtr>(eventReceiver, (void**)&m_EventSender);
+		//potential optimization: don't store event, and disregard the ordering within the same callback group
+		//potential optimization: use another indirection instead of this->event, so that when event goes out of the scope, we wouldn't need to reset every listener
+		this->object = eventReceiver;
+		this->func = call;
+		this->event = &(eventSender->*EventPtr);
+		this->event->add(this);
+	}
+
+	void disconnect()
+	{
+		if (this->event) this->event->remove(this);
 	}
 
 	~Listener()
 	{
-		//TODO problem is m_CallbackIndex can be invalidated by other deletion!
-		if (m_EventSender)
-		{
-			(m_EventSender->*EventPtr).remove_listener(m_CallbackIndex);
-		}
+		disconnect();
+	}
+
+	static void call(void* obj, EventFuncArgsT ... args)
+	{
+		(static_cast<CallbackClass*>(obj)->*CallbackPtr)(args...);
 	}
 };
-
-template<
-	class EventClass, typename EventFuncType, Event<EventFuncType> EventClass::* EventPtr,
-	typename CallbackFuncType, CallbackFuncType* CallbackPtr/*just static*/
->
-struct Listener<EventPtr, CallbackPtr>
-{
-	std::size_t m_CallbackIndex;
-	EventClass* m_EventSender = nullptr;
-
-	Listener() = default;
-
-	Listener(EventClass* eventSender)
-	{
-		connect(eventSender);
-	}
-
-	void connect(EventClass* eventSender)
-	{
-		m_EventSender = eventSender;
-		m_CallbackIndex = (eventSender->*EventPtr).template add_static_listener<CallbackPtr>((void**)&m_EventSender);
-	}
-
-	~Listener()
-	{
-		if (m_EventSender)
-		{
-			(m_EventSender->*EventPtr).remove_listener(m_CallbackIndex);
-		}
-	}
-};
-
-template<
-	typename EventFuncType, Event<EventFuncType>* EventPtr/*just static*/,
-	class CallbackClass, typename CallbackFuncType, CallbackFuncType CallbackClass::* CallbackPtr
->
-struct Listener<EventPtr, CallbackPtr>
-{
-	std::size_t m_CallbackIndex;
-
-	Listener(CallbackClass* eventReceiver)
-	{
-		m_CallbackIndex = EventPtr->template add_listener<CallbackPtr>(eventReceiver);
-	}
-
-	~Listener()
-	{
-		EventPtr->remove_listener(m_CallbackIndex);
-	}
-};
-
-template<
-	typename EventFuncType, Event<EventFuncType>* EventPtr/*just static*/,
-	typename CallbackFuncType, CallbackFuncType* CallbackPtr/*just static*/
->
-struct Listener<EventPtr, CallbackPtr>
-{
-	Listener()
-	{
-		EventPtr->template add_static_listener<CallbackPtr>();
-	}
-};
-
-template<typename R, typename ...A>
-inline Event<R(A...)>::~Event()
-{
-	for (void** cleanup : m_Cleanups)
-	{
-		*cleanup = nullptr;
-	}
-}
