@@ -1,5 +1,4 @@
 #pragma once
-#include <vector>
 
 namespace ifevec
 {
@@ -22,23 +21,43 @@ namespace ifevec
 		{
 			void* object;
 			CallbackFuncType* func;
-
-			Callback(void* object, CallbackFuncType* func)
-				: object(object)
-				, func(func)
-			{}
 		};
 
-		std::vector<Callback> m_Callbacks;
-		std::vector<ListenerBase*> m_Listeners;
+		size_t m_Size = 0;
+		size_t m_Capacity = 0;
+		Callback* m_Callbacks = nullptr;
+		ListenerBase** m_Listeners = nullptr;
+
 		bool m_Calling = false; //represents if we are in the middle of calling back, no matter recursive or not. TODO use a single bit
 		bool m_Dirty = false; //TODO use a single bit
 
 		void add(void* object, CallbackFuncType* func, ListenerBase* pListener)
 		{
-			m_Callbacks.emplace_back(object, func);
-			m_Listeners.emplace_back(pListener);
-			pListener->m_idx = m_Callbacks.size() - 1;
+			if (m_Size == m_Capacity)
+			{
+				//grow and copy
+				size_t capacity = (m_Capacity * 3) / 2; //grow by 1.5
+				if (!capacity) capacity = 2;
+				Callback* callbacks = new Callback[capacity];
+				ListenerBase** listeners = new ListenerBase * [capacity];
+
+				for (size_t i = 0; i < m_Size; ++i)
+				{
+					callbacks[i] = m_Callbacks[i];
+					listeners[i] = m_Listeners[i];
+				}
+
+				m_Capacity = capacity;
+				delete[] m_Callbacks;
+				m_Callbacks = callbacks;
+				delete[] m_Listeners;
+				m_Listeners = listeners;
+			}
+
+			m_Callbacks[m_Size].object = object;
+			m_Callbacks[m_Size].func = func;
+			m_Listeners[m_Size] = pListener;
+			pListener->m_idx = m_Size++;
 		}
 
 		void remove(size_t idx)
@@ -58,8 +77,10 @@ namespace ifevec
 
 		~Event()
 		{
-			for (ListenerBase* l : m_Listeners)
-				if (l) l->m_Event = nullptr;
+			for (ListenerBase** l = m_Listeners, **end = m_Listeners + m_Size; l < end; ++l)
+				if (*l) (*l)->m_Event = nullptr;
+			delete[] m_Listeners;
+			delete[] m_Callbacks;
 		}
 
 		template<typename ... ActualArgsT>
@@ -68,8 +89,9 @@ namespace ifevec
 			bool isRecursion = m_Calling;
 			if (!m_Calling) m_Calling = true;
 
-			//TODO: how to handle possible reallocation invalidating iterators. Use idx?
-			for (size_t i = 0, n = m_Callbacks.size(); i < n; ++i)
+			//TODO: using index is necessary because of potential reallocation during callback. Can we make it faster? (yet another flag?)
+			//TODO: alternatively, simply use another buffer for newly added ones during callback?
+			for (size_t i = 0; i < m_Size; ++i)
 			{
 				auto& cb = m_Callbacks[i];
 				if (cb.func)
@@ -83,9 +105,9 @@ namespace ifevec
 				if (m_Dirty)
 				{
 					m_Dirty = false;
-					//remove all empty
+					//remove all empty slots while patching the stored index in the listener
 					size_t sz = 0;
-					for (size_t i = 0, n = m_Callbacks.size(); i < n; ++i)
+					for (size_t i = 0; i < m_Size; ++i)
 					{
 						if (m_Listeners[i]) {
 							m_Listeners[sz] = m_Listeners[i];
@@ -94,8 +116,7 @@ namespace ifevec
 							++sz;
 						}
 					}
-					m_Listeners.erase(m_Listeners.begin() + sz, m_Listeners.end());
-					m_Callbacks.erase(m_Callbacks.begin() + sz, m_Callbacks.end());
+					m_Size = sz;
 				}
 			}
 		}
@@ -124,7 +145,7 @@ namespace ifevec
 		{
 			//fix the object
 			if (other.m_object)
-				m_object = (CallbackClass *)((size_t)this - ((size_t)&other - (size_t)other.m_object));
+				m_object = (CallbackClass*)((size_t)this - ((size_t)& other - (size_t)other.m_object));
 
 			//fix the links
 			if (m_Event)
@@ -157,4 +178,3 @@ namespace ifevec
 		}
 	};
 }
-

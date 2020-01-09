@@ -13,6 +13,8 @@
 namespace TestEventList
 {
 #include "Test.h"
+
+	//this part of the test inspects specific layouts in the memory, thus only applies to the linked-list implementation
 	namespace GroupingTest
 	{
 		template<int x>
@@ -86,8 +88,6 @@ int main()
 	//TestEventList::test();
 	//TestEventList::GroupingTest::test();
 	TestEventVector::test();
-
-	//simpleBench();
 
 	std::cout << "\n";
 	std::cout << "Benchmarking implementation using linked list:\n";
