@@ -4,23 +4,19 @@ namespace ifevec
 {
 	template<typename F> struct Event;
 
+	struct EventBase;
 	struct ListenerBase
 	{
-		void* m_Event = nullptr;
+		EventBase* m_Event = nullptr;
 		size_t m_idx;
 	};
 
-	template<typename R, typename ... A>
-	struct Event<R(A...)>
+	struct EventBase
 	{
-	private:
-		template<auto, auto> friend struct Listener;
-		using CallbackFuncType = R(void*, A...);
-
 		struct Callback
 		{
 			void* object;
-			CallbackFuncType* func;
+			void* func;
 		};
 
 		union
@@ -44,7 +40,27 @@ namespace ifevec
 		size_t m_Capacity : 8 * sizeof size_t - 1;
 		size_t m_Multi : 1; //flag, 0 => holding single listener
 
-		void add(void* object, CallbackFuncType* func, ListenerBase* pListener)
+		EventBase() : m_SingleCb(), m_SingleListener(), m_Capacity(), m_Multi()
+		{
+		}
+
+		~EventBase()
+		{
+			if (m_Multi)
+			{
+				for (ListenerBase** l = m_Listeners, **end = m_Listeners + m_Size; l < end; ++l)
+					if (*l) (*l)->m_Event = nullptr;
+				free(m_Listeners);
+				free(m_Callbacks);
+			}
+			else
+			{
+				if (m_SingleListener)
+					m_SingleListener->m_Event = nullptr;
+			}
+		}
+
+		void add(void* object, void* func, ListenerBase* pListener)
 		{
 			if (!m_Multi)
 			{
@@ -63,7 +79,7 @@ namespace ifevec
 					callbacks[0] = m_SingleCb;
 					callbacks[1].object = object;
 					callbacks[1].func = func;
-					ListenerBase** listeners = (ListenerBase **)malloc(sizeof(void*) * m_Capacity);
+					ListenerBase** listeners = (ListenerBase * *)malloc(sizeof(void*) * m_Capacity);
 					listeners[0] = m_SingleListener;
 					listeners[1] = pListener;
 					m_Callbacks = callbacks;
@@ -74,7 +90,7 @@ namespace ifevec
 					pListener->m_idx = 1;
 				}
 			}
-			else 
+			else
 			{
 				if (m_Size == m_Capacity)
 				{
@@ -120,27 +136,13 @@ namespace ifevec
 			}
 		}
 
-	public:
+	};
 
-		Event() : m_SingleCb(), m_SingleListener(), m_Capacity(), m_Multi()
-		{
-		}
-
-		~Event()
-		{
-			if (m_Multi)
-			{
-				for (ListenerBase** l = m_Listeners, **end = m_Listeners + m_Size; l < end; ++l)
-					if (*l) (*l)->m_Event = nullptr;
-				free(m_Listeners);
-				free(m_Callbacks);
-			}
-			else
-			{
-				if (m_SingleListener)
-					m_SingleListener->m_Event = nullptr;
-			}
-		}
+	template<typename R, typename ... A>
+	struct Event<R(A...)> : EventBase
+	{
+		template<auto, auto> friend struct Listener;
+		using CallbackFuncType = R(void*, A...);
 
 		template<typename ... ActualArgsT>
 		void operator()(ActualArgsT&& ... args)
@@ -156,7 +158,7 @@ namespace ifevec
 				{
 					auto& cb = m_Callbacks[i];
 					if (cb.func)
-						cb.func(cb.object, std::forward<ActualArgsT>(args)...);
+						static_cast<CallbackFuncType*>(cb.func)(cb.object, std::forward<ActualArgsT>(args)...);
 				}
 
 				if (!isRecursion)
@@ -184,7 +186,7 @@ namespace ifevec
 			else
 			{
 				if (m_SingleCb.func)
-					m_SingleCb.func(m_SingleCb.object, std::forward<ActualArgsT>(args)...);
+					static_cast<CallbackFuncType*>(m_SingleCb.func)(m_SingleCb.object, std::forward<ActualArgsT>(args)...);
 			}
 		}
 	};
@@ -218,7 +220,7 @@ namespace ifevec
 
 			//fix the links
 			if (m_Event)
-				static_cast<EventType*>(m_Event)->replace(m_idx, m_object, this);
+				m_Event->replace(m_idx, m_object, this);
 
 			other.m_object = nullptr;
 			other.m_Event = nullptr;
@@ -228,22 +230,17 @@ namespace ifevec
 		{
 			m_object = eventReceiver;
 			m_Event = &(eventSender->*EventPtr);
-			static_cast<EventType*>(m_Event)->add(eventReceiver, call, this);
+			m_Event->add(eventReceiver, +[](void* obj, EventFuncArgsT ... args) {(static_cast<CallbackClass*>(obj)->*CallbackPtr)(args...); }, this);
 		}
 
 		void disconnect()
 		{
-			if (m_Event) static_cast<EventType*>(m_Event)->remove(m_idx);
+			if (m_Event) m_Event->remove(m_idx);
 		}
 
 		~Listener()
 		{
 			disconnect();
-		}
-
-		static void call(void* obj, EventFuncArgsT ... args)
-		{
-			(static_cast<CallbackClass*>(obj)->*CallbackPtr)(args...);
 		}
 	};
 }
